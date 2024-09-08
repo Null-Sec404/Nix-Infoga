@@ -1,0 +1,267 @@
+import os
+import whois
+import time
+import subprocess
+import re
+import smtplib
+from dns import resolver
+from pyfiglet import figlet_format
+from datetime import datetime
+import phonenumbers
+from phonenumbers import geocoder, carrier, timezone
+
+# Define colors
+RESET = "\033[0m"
+BOLD = "\033[1m"
+HEADER = "\033[95m"
+OKBLUE = "\033[94m"
+OKGREEN = "\033[92m"
+WARNING = "\033[93m"
+FAIL = "\033[91m"
+INFO = "\033[96m"
+MENU = "\033[34m"  # Dark Blue for menu items
+PROMPT = "\033[35m" # Magenta for prompts
+
+# List of major email providers
+EMAIL_PROVIDERS = {
+    "gmail.com": "Gmail",
+    "yahoo.com": "Yahoo",
+    "hotmail.com": "Hotmail",
+    "protonmail.com": "ProtonMail"
+}
+
+# Define SMS gateway domains for different carriers (examples)
+SMS_GATEWAYS = {
+    "att": "txt.att.net",
+    "verizon": "vtext.com",
+    "tmobile": "tmomail.net",
+    "sprint": "messaging.sprintpcs.com"
+}
+
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def print_banner():
+    clear_screen()
+    
+    # Generate the banner using figlet
+    banner_text = figlet_format("Nix Infoga", font="slant")
+    
+    # Use subprocess to pipe the banner text through lolcat
+    try:
+        process = subprocess.Popen(['lolcat'], stdin=subprocess.PIPE, text=True)
+        process.communicate(input=banner_text)
+    except FileNotFoundError:
+        print(f"{FAIL}lolcat not found. Please install lolcat to use colorized banners.{RESET}")
+
+    print(f"{OKBLUE}{'*' * 50}")
+    print(f"** {OKGREEN}Modern WHOIS Lookup Tool{OKBLUE} **")
+    print(f"{'*' * 50}{RESET}")
+
+def display_menu():
+    print(f"\n{INFO}Please choose an option:{RESET}")
+    print(f"{MENU}[1] WHOIS Lookup{RESET}")
+    print(f"{MENU}[2] Port Scanning{RESET}")
+    print(f"{MENU}[3] Email OSINT{RESET}")
+    print(f"{MENU}[4] Phone Number OSINT{RESET}")
+    print(f"{MENU}[99] Exit{RESET}")
+
+def format_datetime(dt):
+    if isinstance(dt, list):
+        dt = dt[0] if dt else None
+    if isinstance(dt, datetime):
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    return str(dt)
+
+def whois_lookup(domain):
+    try:
+        result = whois.whois(domain)
+        print(f"\n{HEADER}WHOIS Information:{RESET}")
+        for key, value in result.items():
+            if value:
+                # Format datetime fields
+                if key.lower() in ['creation_date', 'expiration_date', 'updated_date']:
+                    value = format_datetime(value)
+                print(f"{OKGREEN}{key}: {RESET}{INFO}{value}{RESET}")
+    except Exception as e:
+        print(f"{FAIL}Error: {e}{RESET}")
+    return_to_menu()
+
+def port_scanner(host):
+    try:
+        print(f"\n{HEADER}Port Scanning on {host}:{RESET}")
+        
+        # Define ports to scan - you can customize this list
+        common_ports = '22,25,53,80,110,143,443,445,993,995,3306,3389,21'
+        
+        # Using Nmap for comprehensive scanning including OS detection and service version detection
+        scan_command = [
+            'sudo', 'nmap',
+            '-p', common_ports,  # Scan common ports
+            '--open',  # Show only open ports
+            '-A',  # Enable OS detection, version detection, script scanning, and traceroute
+            '-O',  # Enable OS detection
+            '-T4',
+            '--min-rate', '1000',  # Increase the speed of the scan
+            '--version-all',  # Detect versions of all services
+            '--traceroute',  # Trace the route to the target
+            host
+        ]
+
+        try:
+            # Execute the nmap scan
+            process = subprocess.Popen(scan_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate()
+
+            if process.returncode == 0:
+                # Print the scan results
+                print(f"\n{HEADER}Scan Results:{RESET}")
+                print(stdout)
+            else:
+                print(f"{FAIL}Error executing nmap: {stderr}{RESET}")
+
+        except FileNotFoundError:
+            print(f"{FAIL}Nmap not found. Please install nmap to use this feature.{RESET}")
+
+    except Exception as e:
+        print(f"{FAIL}Error: {e}{RESET}")
+    return_to_menu()
+
+def email_format_valid(email):
+    return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email)
+
+def get_provider_info(domain):
+    return EMAIL_PROVIDERS.get(domain, "Unknown")
+
+def check_email_existence(domain):
+    try:
+        # MX Record Lookup
+        mx_records = resolver.resolve(domain, 'MX')
+        return bool(mx_records)
+    except (resolver.NoAnswer, resolver.NXDOMAIN):
+        return False
+    except Exception as e:
+        print(f"{FAIL}Error checking MX records: {e}{RESET}")
+        return False
+
+def verify_email_existence(email):
+    """Verify if the email address exists by checking with the mail server."""
+    try:
+        domain = email.split('@')[1]
+        # Get MX records for the domain
+        mx_records = resolver.resolve(domain, 'MX')
+        mx_record = str(mx_records[0].exchange)
+
+        # Connect to the mail server
+        server = smtplib.SMTP(mx_record)
+        server.set_debuglevel(0)
+        server.helo()
+        server.mail('test@gmail.com')  # Replace with your email address
+        code, message = server.rcpt(email)
+        server.quit()
+
+        # Check the response code
+        if code == 250:
+            return True
+        else:
+            return False
+
+    except Exception as e:
+        print(f"{FAIL}Error verifying email address: {e}{RESET}")
+        return False
+
+def email_osint(email):
+    if not email_format_valid(email):
+        print(f"{FAIL}Invalid email format.{RESET}")
+        return
+
+    try:
+        domain = email.split('@')[1]
+        provider_name = get_provider_info(domain)
+
+        # Check if the domain can receive emails
+        if not check_email_existence(domain):
+            print(f"{FAIL}Email domain does not exist or cannot receive emails.{RESET}")
+            return_to_menu()
+            return
+
+        # Verify specific email existence
+        if verify_email_existence(email):
+            print(f"{INFO}Email Status: {OKGREEN}Email address exists.{RESET}")
+        else:
+            print(f"{INFO}Email Status: {FAIL}Email address does not exist.{RESET}")
+            time.sleep(10)
+            main()
+
+        print(f"\n{HEADER}Email OSINT for {email}:{RESET}")
+        print(f"{INFO}Provider: {OKGREEN}{provider_name}{RESET}")
+
+        # WHOIS Lookup for domain
+        print(f"{INFO}Domain WHOIS Information:{RESET}")
+        whois_lookup(domain)
+
+    except Exception as e:
+        print(f"{FAIL}Error: {e}{RESET}")
+
+def check_phone_number(phone_number):
+    try:
+        # Parse phone number
+        parsed_number = phonenumbers.parse(phone_number, None)
+
+        # Validate the parsed phone number
+        if not phonenumbers.is_valid_number(parsed_number):
+            print(f"{FAIL}Error: Invalid phone number.{RESET}")
+            return
+        
+        # Get geographic information
+        country_name = geocoder.description_for_number(parsed_number, "en")
+        carrier_name = carrier.name_for_number(parsed_number, "en")
+        time_zones = timezone.time_zones_for_number(parsed_number)
+        
+        # Display the phone number details
+        print(f"\n{HEADER}Phone Number Information:{RESET}")
+        print(f"{INFO}Phone Number: {OKGREEN}{phone_number}{RESET}")
+        print(f"{INFO}Country Name: {OKGREEN}{country_name}{RESET}")
+        print(f"{INFO}Carrier: {OKGREEN}{carrier_name if carrier_name else 'Unknown'}{RESET}")
+        print(f"{INFO}Time Zones: {OKGREEN}{', '.join(time_zones) if time_zones else 'Unknown'}{RESET}")
+
+    except phonenumbers.phonenumberutil.NumberParseException as e:
+        print(f"{FAIL}Error: Invalid phone number format.{RESET}")
+    except Exception as e:
+        print(f"{FAIL}Error: {e}{RESET}")
+    
+    return_to_menu()  # Add this line to allow returning to the menu after checking the phone number.
+
+
+
+def return_to_menu():
+    input(f"\n{PROMPT}Press Enter to return to the menu...{RESET}")
+    display_menu()
+
+def main():
+    while True:
+        print_banner()
+        display_menu()
+        choice = input(f"\n{PROMPT}Choose an option: {RESET}")
+        
+        if choice == '1':
+            domain = input(f"{PROMPT}Enter domain to look up: {RESET}")
+            whois_lookup(domain)
+        elif choice == '2':
+            host = input(f"{PROMPT}Enter host to scan: {RESET}")
+            port_scanner(host)
+        elif choice == '3':
+            email = input(f"{PROMPT}Enter email to gather information: {RESET}")
+            email_osint(email)
+        elif choice == '4':
+            phone_number = input(f"{PROMPT}Enter phone number (e.g., +1234567890): {RESET}")
+            check_phone_number(phone_number)
+        elif choice == '99':
+            print(f"{HEADER}Exiting...{RESET}")
+            break
+        else:
+            print(f"{FAIL}Invalid option. Please try again.{RESET}")
+
+if __name__ == "__main__":
+    main()
+
